@@ -341,6 +341,34 @@ static void VLCPatchDictRecursive(id obj) {
             d[@"isPremium"] = @NO;
         }
 
+        // xnxx feed items: server sends blank title/duration but the title
+        // is embedded as a slug in the URL. Extract and humanise it.
+        // e.g. .../THUMBNUM/yoga_goddess_shows_off_tits → "Yoga Goddess Shows Off Tits"
+        if (([d[@"type"] isEqualToString:@"xn"] || [d[@"feedType"] isEqualToString:@"xn"])
+            && [d[@"title"] isEqualToString:@""]
+            && [d[@"url"] isKindOfClass:[NSString class]]) {
+            NSString *url   = d[@"url"];
+            NSArray  *parts = [url componentsSeparatedByString:@"/"];
+            NSString *slug  = parts.lastObject ?: @"";
+            // Strip query string
+            NSRange q = [slug rangeOfString:@"?"];
+            if (q.location != NSNotFound) slug = [slug substringToIndex:q.location];
+            // Remove trailing dot if any
+            if ([slug hasSuffix:@"."]) slug = [slug substringToIndex:slug.length - 1];
+            if (slug.length > 3) {
+                // Replace underscores/hyphens with spaces, then title-case first word
+                NSString *spaced = [slug stringByReplacingOccurrencesOfString:@"_" withString:@" "];
+                spaced = [spaced stringByReplacingOccurrencesOfString:@"-" withString:@" "];
+                // Capitalise first letter
+                if (spaced.length > 0) {
+                    spaced = [NSString stringWithFormat:@"%@%@",
+                              [[spaced substringToIndex:1] uppercaseString],
+                              [spaced substringFromIndex:1]];
+                }
+                d[@"title"] = spaced;
+            }
+        }
+
         for (id key in [d allKeys]) VLCPatchDictRecursive(d[key]);
     } else if ([obj isKindOfClass:[NSMutableArray class]]) {
         NSMutableArray *arr = (NSMutableArray *)obj;
