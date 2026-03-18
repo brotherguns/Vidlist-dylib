@@ -1,0 +1,9 @@
+Package: com.brotherguns.vlcrawler
+Name: VLCrawler
+Depends: mobilesubstrate
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: Recursive video link crawler for VidList
+Maintainer: brotherguns
+Author: brotherguns
+Section: Tweaks
