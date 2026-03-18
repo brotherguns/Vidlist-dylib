@@ -164,13 +164,14 @@ static NSData *VLCPatchPremiumJSON(NSData *data) {
         if (d[@"premiumExpire"] != nil) { d[@"premiumExpire"] = @"2099-12-31"; patched = YES; }
     };
 
-    __block void (^walk)(id);
-    walk = ^(id obj) {
+    __block __weak void (^weakWalk)(id);
+    void (^walk)(id);
+    weakWalk = walk = ^(id obj) {
         if ([obj isKindOfClass:[NSMutableDictionary class]]) {
             patchDict((NSMutableDictionary *)obj);
-            for (id key in (NSMutableDictionary *)obj) walk(((NSMutableDictionary *)obj)[key]);
+            for (id key in (NSMutableDictionary *)obj) weakWalk(((NSMutableDictionary *)obj)[key]);
         } else if ([obj isKindOfClass:[NSMutableArray class]]) {
-            for (id item in (NSMutableArray *)obj) walk(item);
+            for (id item in (NSMutableArray *)obj) weakWalk(item);
         }
     };
     walk(json);
