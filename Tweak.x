@@ -286,60 +286,104 @@ static NSData *VLCPatchJSON(NSData *data) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Response dumper
-// Writes raw + patched JSON to <Documents>/VLCrawler/dumps/ for inspection
-// Filename: <unix_timestamp>_<path_slug>.json  (raw) / ..._patched.json
+// VLCDumpProtocol – NSURLProtocol subclass
+// Registered globally, catches ALL vidlist.pw traffic including Alamofire
+// delegate sessions that bypass NSURLSession completion handler hooks
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void VLCDumpResponse(NSData *raw, NSData *patched, NSString *urlPath) {
-    static dispatch_once_t once;
-    static NSString *dumpDir;
-    dispatch_once(&once, ^{
-        NSString *docs = NSSearchPathForDirectoriesInDomains(
-            NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-        dumpDir = [docs stringByAppendingPathComponent:@"VLCrawler/dumps"];
-        [[NSFileManager defaultManager] createDirectoryAtPath:dumpDir
-                                  withIntermediateDirectories:YES
-                                                   attributes:nil
-                                                        error:nil];
-    });
-
-    // Build a safe filename from the URL path
-    NSString *slug = [urlPath stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
-    slug = [slug stringByReplacingOccurrencesOfString:@"." withString:@"-"];
-    if (slug.length > 60) slug = [slug substringFromIndex:slug.length - 60];
-
-    long long ts = (long long)[[NSDate date] timeIntervalSince1970];
-    NSString *base = [NSString stringWithFormat:@"%lld%@", ts, slug];
-
-    // Pretty-print raw
-    if (raw && raw.length > 1) {
-        NSError *e = nil;
-        id obj = [NSJSONSerialization JSONObjectWithData:raw options:0 error:&e];
-        NSData *pretty = obj
-            ? [NSJSONSerialization dataWithJSONObject:obj
-                                             options:NSJSONWritingPrettyPrinted
-                                               error:nil]
-            : raw;
-        NSString *rawPath = [dumpDir stringByAppendingPathComponent:
-                             [base stringByAppendingString:@"_raw.json"]];
-        [pretty writeToFile:rawPath atomically:YES];
-    }
-
-    // Pretty-print patched
-    if (patched && patched.length > 1) {
-        NSError *e = nil;
-        id obj = [NSJSONSerialization JSONObjectWithData:patched options:0 error:&e];
-        NSData *pretty = obj
-            ? [NSJSONSerialization dataWithJSONObject:obj
-                                             options:NSJSONWritingPrettyPrinted
-                                               error:nil]
-            : patched;
-        NSString *patchedPath = [dumpDir stringByAppendingPathComponent:
-                                 [base stringByAppendingString:@"_patched.json"]];
-        [pretty writeToFile:patchedPath atomically:YES];
-    }
+static NSString *VLCDumpPath(void) {
+    NSString *docs = NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    // Write to Documents root so it shows in Files app immediately
+    return docs;
 }
+
+static void VLCSaveDump(NSData *raw, NSString *urlPath) {
+    if (!raw || raw.length < 4) return;
+    uint8_t first = ((uint8_t *)raw.bytes)[0];
+    if (first != '{' && first != '[') return;   // not JSON, skip
+
+    NSString *dumpDir = [VLCDumpPath() stringByAppendingPathComponent:@"VLDumps"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dumpDir
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:nil];
+
+    // Slug from path
+    NSString *slug = [urlPath stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+    if (slug.length > 50) slug = [slug substringFromIndex:slug.length - 50];
+    long long ts = (long long)[[NSDate date] timeIntervalSince1970];
+
+    // Pretty print
+    NSError *e = nil;
+    id obj = [NSJSONSerialization JSONObjectWithData:raw options:0 error:&e];
+    NSData *pretty = (obj && !e)
+        ? [NSJSONSerialization dataWithJSONObject:obj options:NSJSONWritingPrettyPrinted error:nil]
+        : raw;
+
+    NSString *name = [NSString stringWithFormat:@"%lld%@.json", ts, slug];
+    NSString *full = [dumpDir stringByAppendingPathComponent:name];
+    [pretty writeToFile:full atomically:YES];
+    NSLog(@"[VLCrawler] Dumped %lu bytes → %@", (unsigned long)raw.length, name);
+}
+
+@interface VLCDumpProtocol : NSURLProtocol
+@property (nonatomic, strong) NSURLSessionDataTask *innerTask;
+@property (nonatomic, strong) NSMutableData        *buffer;
+@end
+
+@implementation VLCDumpProtocol
+
++ (BOOL)canInitWithRequest:(NSURLRequest *)request {
+    if ([NSURLProtocol propertyForKey:@"VLCDone" inRequest:request]) return NO;
+    NSString *host = request.URL.host ?: @"";
+    return [host containsString:@"vidlist.pw"];
+}
+
++ (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request {
+    return request;
+}
+
+- (void)startLoading {
+    self.buffer = [NSMutableData data];
+
+    NSMutableURLRequest *req = [self.request mutableCopy];
+    [NSURLProtocol setProperty:@YES forKey:@"VLCDone" inRequest:req];
+
+    __weak VLCDumpProtocol *weakSelf = self;
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:
+        [NSURLSessionConfiguration defaultSessionConfiguration]];
+
+    self.innerTask = [session dataTaskWithRequest:req
+                               completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+        VLCDumpProtocol *s = weakSelf;
+        if (!s) return;
+
+        if (err) {
+            [s.client URLProtocol:s didFailWithError:err];
+            return;
+        }
+
+        NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)resp;
+        [s.client URLProtocol:s didReceiveResponse:httpResp
+               cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+
+        // Dump raw before patching
+        VLCSaveDump(data, s.request.URL.path ?: @"unknown");
+
+        // Patch and forward
+        NSData *patched = VLCPatchJSON(data);
+        if (patched.length) [s.client URLProtocol:s didLoadData:patched];
+        [s.client URLProtocolDidFinishLoading:s];
+    }];
+    [self.innerTask resume];
+}
+
+- (void)stopLoading {
+    [self.innerTask cancel];
+}
+
+@end
 
 %hook NSURLSession
 
@@ -349,11 +393,10 @@ static void VLCDumpResponse(NSData *raw, NSData *patched, NSString *urlPath) {
     if (![host containsString:@"vidlist.pw"]) {
         return %orig(request, completion);
     }
-    NSString *path = request.URL.path ?: @"";
     void (^handler)(NSData *, NSURLResponse *, NSError *) =
         ^(NSData *d, NSURLResponse *r, NSError *e) {
             NSData *patched = VLCPatchJSON(d);
-            VLCDumpResponse(d, patched, path);
+            VLCSaveDump(d, request.URL.path ?: @"");
             if (completion) completion(patched, r, e);
         };
     return %orig(request, handler);
@@ -365,15 +408,16 @@ static void VLCDumpResponse(NSData *raw, NSData *patched, NSString *urlPath) {
     if (![host containsString:@"vidlist.pw"]) {
         return %orig(url, completion);
     }
-    NSString *path = url.path ?: @"";
     void (^handler)(NSData *, NSURLResponse *, NSError *) =
         ^(NSData *d, NSURLResponse *r, NSError *e) {
             NSData *patched = VLCPatchJSON(d);
-            VLCDumpResponse(d, patched, path);
+            VLCSaveDump(d, url.path ?: @"");
             if (completion) completion(patched, r, e);
         };
     return %orig(url, handler);
 }
+
+%end
 
 %end
 
@@ -431,6 +475,9 @@ static BOOL VLCIsPremiumKey(NSString *key) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 %ctor {
+    // Register NSURLProtocol interceptor — catches Alamofire delegate sessions
+    [NSURLProtocol registerClass:[VLCDumpProtocol class]];
+
     // Warm cache
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
         (void)[VLCrawler shared];
