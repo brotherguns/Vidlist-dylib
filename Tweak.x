@@ -1,6 +1,4 @@
 // VLCrawler – Tweak.x
-// Fix 1: inject button onto TabBarController.view (always on top)
-// Fix 2: intercept NSURLSession completions, patch isPremium/isTrial in JSON
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -18,66 +16,51 @@
 - (instancetype)initWithResults:(NSArray<VLVideoResult *> *)results title:(NSString *)title;
 @end
 
-@interface _TtC7VidList16TabBarController : UITabBarController
-- (void)_vlc_injectButton;
-- (void)_vlc_updateBadge:(UIButton *)btn;
+// SourcesViewController – used to detect when Sources tab is active
+@interface _TtC7VidList21SourcesViewController : UIViewController
+- (void)_vlc_ensureWindowButton;
 - (void)_vlc_openCrawler:(UIButton *)sender;
 @end
 
 // ─────────────────────────────────────────────
-// Hook 1: TabBarController
-// Button lives here so it floats above every tab's content view
+// Button helpers – lives on the key window so
+// nothing in the VC hierarchy can cover it
 // ─────────────────────────────────────────────
 
-%hook _TtC7VidList16TabBarController
-
-- (void)viewDidLoad {
-    %orig;
-    [self _vlc_injectButton];
-}
-
-- (void)viewDidLayoutSubviews {
-    %orig;
-    for (UIView *v in self.view.subviews) {
-        if (v.tag == kVLCButtonTag) {
-            [self.view bringSubviewToFront:v];
-            break;
+static UIButton *VLCGetOrCreateButton(void) {
+    UIWindow *win = nil;
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]]) {
+            for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+                if (w.isKeyWindow) { win = w; break; }
+            }
         }
     }
-}
+    if (!win) win = [UIApplication sharedApplication].keyWindow;
+    if (!win) return nil;
 
-- (void)setSelectedIndex:(NSUInteger)index {
-    %orig;
-    for (UIView *v in self.view.subviews) {
-        if (v.tag == kVLCButtonTag) {
-            ((UIButton *)v).hidden = (index != 2);
-            break;
-        }
-    }
-}
-
-%new
-- (void)_vlc_injectButton {
-    for (UIView *v in self.view.subviews) {
-        if (v.tag == kVLCButtonTag) [v removeFromSuperview];
+    // Find existing
+    for (UIView *v in win.subviews) {
+        if (v.tag == kVLCButtonTag) return (UIButton *)v;
     }
 
+    // Create
     CGFloat size   = 54;
     CGFloat margin = 20;
-    CGFloat tabH   = self.tabBar.frame.size.height ?: 83;
-    CGRect  bounds = self.view.bounds;
+    CGFloat safeB  = win.safeAreaInsets.bottom;
+    CGFloat tabH   = 49 + safeB;
 
     UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
     btn.tag       = kVLCButtonTag;
-    btn.frame     = CGRectMake(bounds.size.width  - size - margin,
-                               bounds.size.height - size - tabH - margin,
+    btn.frame     = CGRectMake(win.bounds.size.width  - size - margin,
+                               win.bounds.size.height - size - tabH - margin,
                                size, size);
     btn.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleLeftMargin;
 
     btn.backgroundColor     = [UIColor systemBlueColor];
     btn.layer.cornerRadius  = size / 2.0;
     btn.layer.shadowColor   = [UIColor blackColor].CGColor;
-    btn.layer.shadowOpacity = 0.3f;
+    btn.layer.shadowOpacity = 0.35f;
     btn.layer.shadowRadius  = 8;
     btn.layer.shadowOffset  = CGSizeMake(0, 4);
     btn.tintColor           = [UIColor whiteColor];
@@ -88,40 +71,63 @@
     UIImage *icon = [UIImage systemImageNamed:@"antenna.radiowaves.left.and.right"
                             withConfiguration:cfg];
     [btn setImage:icon forState:UIControlStateNormal];
+    btn.hidden = YES; // shown only when Sources tab is visible
 
-    [self _vlc_updateBadge:btn];
-    [btn addTarget:self
-            action:@selector(_vlc_openCrawler:)
-  forControlEvents:UIControlEventTouchUpInside];
+    // Badge
+    NSUInteger count = [[VLCrawler shared] allCachedResults].count;
+    if (count) {
+        UILabel *badge            = [[UILabel alloc] initWithFrame:CGRectMake(34, -4, 22, 18)];
+        badge.tag                 = kVLCBadgeTag;
+        badge.backgroundColor     = [UIColor systemRedColor];
+        badge.textColor           = [UIColor whiteColor];
+        badge.font                = [UIFont boldSystemFontOfSize:10];
+        badge.textAlignment       = NSTextAlignmentCenter;
+        badge.layer.cornerRadius  = 9;
+        badge.layer.masksToBounds = YES;
+        badge.text = count > 99 ? @"99+" : [NSString stringWithFormat:@"%lu", (unsigned long)count];
+        [btn addSubview:badge];
+    }
 
-    btn.hidden = (self.selectedIndex != 2);
+    [win addSubview:btn];
+    return btn;
+}
 
-    [self.view addSubview:btn];
-    [self.view bringSubviewToFront:btn];
+// ─────────────────────────────────────────────
+// Hook: SourcesViewController
+// Show button when Sources is on screen, hide when leaving
+// ─────────────────────────────────────────────
+
+%hook _TtC7VidList21SourcesViewController
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    [self _vlc_ensureWindowButton];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    %orig;
+    UIButton *btn = VLCGetOrCreateButton();
+    btn.hidden = YES;
 }
 
 %new
-- (void)_vlc_updateBadge:(UIButton *)btn {
-    for (UIView *v in btn.subviews) {
-        if (v.tag == kVLCBadgeTag) [v removeFromSuperview];
-    }
-    NSUInteger count = [[VLCrawler shared] allCachedResults].count;
-    if (!count) return;
-
-    UILabel *badge            = [[UILabel alloc] initWithFrame:CGRectMake(34, -4, 22, 18)];
-    badge.tag                 = kVLCBadgeTag;
-    badge.backgroundColor     = [UIColor systemRedColor];
-    badge.textColor           = [UIColor whiteColor];
-    badge.font                = [UIFont boldSystemFontOfSize:10];
-    badge.textAlignment       = NSTextAlignmentCenter;
-    badge.layer.cornerRadius  = 9;
-    badge.layer.masksToBounds = YES;
-    badge.text = count > 99 ? @"99+" : [NSString stringWithFormat:@"%lu", (unsigned long)count];
-    [btn addSubview:badge];
+- (void)_vlc_ensureWindowButton {
+    UIButton *btn = VLCGetOrCreateButton();
+    if (!btn) return;
+    // Wire target if not already set (button may have been created without a target)
+    [btn removeTarget:nil action:NULL forControlEvents:UIControlEventTouchUpInside];
+    [btn addTarget:self
+            action:@selector(_vlc_openCrawler:)
+  forControlEvents:UIControlEventTouchUpInside];
+    btn.hidden = NO;
 }
 
 %new
 - (void)_vlc_openCrawler:(UIButton *)sender {
+    UIViewController *top = self;
+    // Walk up to find presentable VC
+    while (top.presentedViewController) top = top.presentedViewController;
+
     VLCrawlerSettingsVC *vc = [[VLCrawlerSettingsVC alloc] initWithStyle:UITableViewStyleInsetGrouped];
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
     nav.modalPresentationStyle = UIModalPresentationFormSheet;
@@ -130,25 +136,69 @@
         sheet.detents = @[UISheetPresentationControllerDetent.largeDetent];
         sheet.prefersGrabberVisible = YES;
     }
-    [self presentViewController:nav animated:YES completion:nil];
+    [top presentViewController:nav animated:YES completion:nil];
 }
 
 %end
 
 // ─────────────────────────────────────────────
-// Hook 2: NSURLSession response patching
-// Patches isPremium → true, isTrial → false in any vidlist.pw JSON response
-// before Swift's JSONDecoder ever sees the bytes
+// Premium JSON patcher
+// Handles all vidlist.pw responses:
+//   v1/auth/refreshToken  → patches isPremium, isTrial, premiumExpire
+//   v2/premium/subscriptions → patches isActive, expireAt
+//   Any other endpoint    → same deep walk
 // ─────────────────────────────────────────────
 
-static NSData *VLCPatchPremiumJSON(NSData *data) {
+static void VLCPatchDictRecursive(id obj);
+
+static void VLCPatchDictRecursive(id obj) {
+    if ([obj isKindOfClass:[NSMutableDictionary class]]) {
+        NSMutableDictionary *d = (NSMutableDictionary *)obj;
+
+        // Auth / profile fields
+        if (d[@"isPremium"]     != nil) d[@"isPremium"]     = @YES;
+        if (d[@"isTrial"]       != nil) d[@"isTrial"]       = @NO;
+        if (d[@"premiumExpire"] != nil) d[@"premiumExpire"] = @"2099-12-31T00:00:00.000Z";
+
+        // Subscription object fields
+        if (d[@"isActive"]  != nil) d[@"isActive"]  = @YES;
+        if (d[@"expireAt"]  != nil) d[@"expireAt"]  = @"2099-12-31T00:00:00.000Z";
+        if (d[@"expiredAt"] != nil) d[@"expiredAt"] = @"2099-12-31T00:00:00.000Z";
+
+        // success wrapper sometimes has isPremium at top level
+        if (d[@"success"] != nil && [d[@"success"] isKindOfClass:[NSMutableDictionary class]]) {
+            VLCPatchDictRecursive(d[@"success"]);
+        }
+
+        for (id key in [d allKeys]) {
+            VLCPatchDictRecursive(d[key]);
+        }
+
+    } else if ([obj isKindOfClass:[NSMutableArray class]]) {
+        for (id item in (NSMutableArray *)obj) {
+            VLCPatchDictRecursive(item);
+        }
+    }
+}
+
+static NSData *VLCPatchPremiumJSON(NSData *data, NSString *path) {
     if (!data || data.length < 10) return data;
 
-    NSString *body = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    if (!body) return data;
-    if ([body rangeOfString:@"isPremium"].location == NSNotFound &&
-        [body rangeOfString:@"isTrial"].location == NSNotFound) {
-        return data;
+    // Only bother parsing JSON for relevant endpoints
+    BOOL relevant = [path containsString:@"auth"]
+                 || [path containsString:@"premium"]
+                 || [path containsString:@"profile"]
+                 || [path containsString:@"user"];
+
+    if (!relevant) {
+        // Quick string check before expensive parse
+        NSString *body = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        if (!body) return data;
+        if ([body rangeOfString:@"isPremium"].location  == NSNotFound &&
+            [body rangeOfString:@"isActive"].location   == NSNotFound &&
+            [body rangeOfString:@"expireAt"].location   == NSNotFound) {
+            return data;
+        }
     }
 
     NSError *err = nil;
@@ -157,26 +207,8 @@ static NSData *VLCPatchPremiumJSON(NSData *data) {
                                                error:&err];
     if (err || !json) return data;
 
-    __block BOOL patched = NO;
-    void (^patchDict)(NSMutableDictionary *) = ^(NSMutableDictionary *d) {
-        if (d[@"isPremium"]    != nil) { d[@"isPremium"]    = @YES;          patched = YES; }
-        if (d[@"isTrial"]      != nil) { d[@"isTrial"]      = @NO;           patched = YES; }
-        if (d[@"premiumExpire"] != nil) { d[@"premiumExpire"] = @"2099-12-31"; patched = YES; }
-    };
+    VLCPatchDictRecursive(json);
 
-    __block __weak void (^weakWalk)(id);
-    void (^walk)(id);
-    weakWalk = walk = ^(id obj) {
-        if ([obj isKindOfClass:[NSMutableDictionary class]]) {
-            patchDict((NSMutableDictionary *)obj);
-            for (id key in (NSMutableDictionary *)obj) weakWalk(((NSMutableDictionary *)obj)[key]);
-        } else if ([obj isKindOfClass:[NSMutableArray class]]) {
-            for (id item in (NSMutableArray *)obj) weakWalk(item);
-        }
-    };
-    walk(json);
-
-    if (!patched) return data;
     NSData *out = [NSJSONSerialization dataWithJSONObject:json options:0 error:&err];
     return (err || !out) ? data : out;
 }
@@ -189,9 +221,10 @@ static NSData *VLCPatchPremiumJSON(NSData *data) {
     if (![host containsString:@"vidlist.pw"]) {
         return %orig(request, completion);
     }
+    NSString *path = request.URL.path ?: @"";
     void (^patchedHandler)(NSData *, NSURLResponse *, NSError *) =
         ^(NSData *data, NSURLResponse *response, NSError *error) {
-            if (completion) completion(VLCPatchPremiumJSON(data), response, error);
+            if (completion) completion(VLCPatchPremiumJSON(data, path), response, error);
         };
     return %orig(request, patchedHandler);
 }
