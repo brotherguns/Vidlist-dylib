@@ -314,6 +314,12 @@ static NSArray<NSString *> *VideoExtensions(void) {
         for (NSString *sk in skipExts) {
             if ([pathOnly hasSuffix:sk]) return;
         }
+        // Reject CDN image-resize proxy URLs (e.g. phncdn /plain/rs:fit: thumbnails).
+        // These look like .mp4 in path but are actually image proxies — the telltale
+        // signs are /plain/ segment followed by image transform params.
+        if ([lower containsString:@"/plain/"] &&
+            ([lower containsString:@"rs:fit:"] || [lower containsString:@"rs:fill:"] ||
+             [lower containsString:@"/bg:"] || [lower containsString:@"vts:"])) return;
         if (requireVideoExt && ![self _isVideoURL:abs]) return;
         // Must at least be http(s)
         if (![abs hasPrefix:@"http"]) return;
@@ -441,6 +447,10 @@ static NSArray<NSString *> *VideoExtensions(void) {
 
 - (nullable NSString *)_absoluteURL:(NSString *)raw base:(NSString *)base {
     if (!raw.length) return nil;
+    // Decode HTML entities before anything else
+    raw = [raw stringByReplacingOccurrencesOfString:@"&amp;" withString:@"&"];
+    raw = [raw stringByReplacingOccurrencesOfString:@"&#38;" withString:@"&"];
+    raw = [raw stringByReplacingOccurrencesOfString:@"&quot;" withString:@"\""];
     // Already absolute
     if ([raw hasPrefix:@"http://"] || [raw hasPrefix:@"https://"]) return raw;
     // Protocol-relative
