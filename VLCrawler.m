@@ -74,16 +74,6 @@ static NSArray<NSString *> *VideoExtensions(void) {
     return exts;
 }
 
-// Keywords that strongly suggest a video URL even without a known extension
-static NSArray<NSString *> *VideoKeywords(void) {
-    static NSArray *kw;
-    static dispatch_once_t t;
-    dispatch_once(&t, ^{
-        kw = @[@"stream", @"video", @"media", @"hls", @"dash",
-               @"playlist", @"manifest", @"embed", @"player"];
-    });
-    return kw;
-}
 
 @interface VLCrawler ()
 @property (nonatomic, strong) NSURLSession         *session;
