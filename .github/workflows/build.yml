@@ -15,33 +15,53 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Cache Theos
+        id: theos-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/theos
+          key: theos-${{ runner.os }}-${{ hashFiles('.github/workflows/build.yml') }}
+
       - name: Install Theos
+        if: steps.theos-cache.outputs.cache-hit != 'true'
         run: |
-          brew install ldid xz
+          brew install ldid
           git clone --recursive https://github.com/theos/theos.git $THEOS
-          # Download iOS SDK
-          curl -Lo /tmp/sdk.tar.xz https://github.com/theos/sdks/releases/download/fallback/iPhoneOS16.5.sdk.tar.xz
-          tar -xJf /tmp/sdk.tar.xz -C $THEOS/sdks/
+        env:
+          THEOS: ${{ github.workspace }}/theos
+
+      - name: Set up iOS SDK
+        run: |
+          # Use the iOS SDK already bundled with Xcode on the runner
+          XCODE_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          SDK_VERSION=$(xcrun --sdk iphoneos --show-sdk-version)
+          echo "Using Xcode SDK: $XCODE_SDK (iOS $SDK_VERSION)"
+
+          mkdir -p $THEOS/sdks
+          # Symlink the Xcode SDK into Theos sdks dir
+          ln -sfn "$XCODE_SDK" "$THEOS/sdks/iPhoneOS${SDK_VERSION}.sdk"
+
+          echo "SDK_VERSION=$SDK_VERSION" >> $GITHUB_ENV
         env:
           THEOS: ${{ github.workspace }}/theos
 
       - name: Build
         run: |
-          cd VLCrawlerTweak
           make clean
           make package FINALPACKAGE=1
         env:
           THEOS: ${{ github.workspace }}/theos
           THEOS_DEVICE_IP: ""
+          SDKVERSION: ${{ env.SDK_VERSION }}
 
       - name: Extract dylib from deb
         run: |
-          DEB=$(ls VLCrawlerTweak/packages/*.deb | head -1)
+          DEB=$(ls packages/*.deb | head -1)
+          echo "Built: $DEB"
           mkdir -p artifacts
           dpkg-deb -x "$DEB" artifacts/extracted/
           cp artifacts/extracted/Library/MobileSubstrate/DynamicLibraries/VLCrawler.dylib artifacts/
           cp "$DEB" artifacts/
-          echo "DEB=$DEB" >> $GITHUB_ENV
 
       - name: Upload dylib
         uses: actions/upload-artifact@v4
