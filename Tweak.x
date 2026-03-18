@@ -14,8 +14,11 @@
 - (instancetype)initWithResults:(NSArray<VLVideoResult *> *)results title:(NSString *)title;
 @end
 
-// Full interface declaration so Logos can see properties/methods on self
+// Full interface — includes our %new methods so [self _vlc_...] resolves inside %hook
 @interface _TtC7VidList21SourcesViewController : UIViewController
+- (void)_vlc_injectCrawlerButton;
+- (void)_vlc_updateBadge:(UIButton *)btn;
+- (void)_vlc_openCrawler:(UIButton *)sender;
 @end
 
 // ─────────────────────────────────────────────
