@@ -272,6 +272,7 @@ static NSData *VLCForgedAuthMe(NSData *original) {
             @"favoritesCount": @"0",
             @"id":             @"C645789E-B0E6-43E2-98B0-B0F82DA662E2",
             @"isPremium":      @YES,
+            @"premiumExpire":  @"2099-12-31T00:00:00.000Z",
             @"seenCount":      @"0",
             @"nsfwOn":         @YES,
             @"username":       @"brotherguns53587337",
@@ -284,18 +285,17 @@ static NSData *VLCForgedAuthMe(NSData *original) {
         d[@"isTrial"]        = @NO;
         d[@"nsfwOn"]         = @YES;
         d[@"subscriptionID"] = @"VH-001";
-        if (d[@"premiumExpire"] != nil) d[@"premiumExpire"] = @"2099-12-31T00:00:00.000Z";
+        // premiumExpire is present on real premium accounts — add it if missing
+        d[@"premiumExpire"]  = @"2099-12-31T00:00:00.000Z";
     }
     NSData *out = [NSJSONSerialization dataWithJSONObject:d options:0 error:&e];
     return out ?: original;
 }
 
-// Forged adverts — empty array kills all disclaimer banners
-static NSData *VLCForgedAdverts(void) {
-    static NSData *empty;
-    static dispatch_once_t t;
-    dispatch_once(&t, ^{ empty = [@"[]" dataUsingEncoding:NSUTF8StringEncoding]; });
-    return empty;
+// Adverts passthrough — these are legal disclaimers shown to ALL users,
+// not premium-gated ads. Pass through unmodified.
+static NSData *VLCForgedAdverts(NSData *data) {
+    return data;
 }
 
 // Forged premium subscriptions — active lifetime sub
@@ -425,7 +425,7 @@ static NSData *VLCForgeResponse(NSData *data, NSString *path) {
 
     // Kill adverts entirely — return empty array
     if ([path containsString:@"advert"] ||
-        [path containsString:@"Advert"]) return VLCForgedAdverts();
+        [path containsString:@"Advert"]) return VLCForgedAdverts(data);
 
     // Premium subscriptions — inject active lifetime sub
     if ([path containsString:@"premium/subscription"]) return VLCForgedSubscriptions();
