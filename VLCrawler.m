@@ -306,32 +306,74 @@ static NSArray<NSString *> *VideoKeywords(void) {
     NSMutableArray *found = [NSMutableArray array];
     NSMutableSet   *seen  = [NSMutableSet set];
 
-    // Patterns to search:
-    // 1. src="...." or file="..." or url="..."  with video extensions
-    // 2. Bare strings ending in video ext or known HLS paths
-    // 3. JSON "src"/"url"/"file"/"stream" keys
+    // Extensions to skip (definitely not video)
+    NSArray *skipExts = @[@".png",@".jpg",@".jpeg",@".gif",@".svg",@".webp",
+                          @".ico",@".css",@".js",@".woff",@".woff2",@".ttf",@".eot"];
 
-    NSString *extPattern = [NSString stringWithFormat:
-        @"(?:src|href|file|url|stream|source|path|data-src|data-url)\\s*[=:]\\s*[\"']([^\"'\\s]{5,500}\\.(?:%@)[^\"'\\s]{0,30})[\"']",
+    // Helper block — add a URL, optionally requiring _isVideoURL
+    void (^tryAdd)(NSString *, BOOL) = ^(NSString *raw, BOOL requireVideoExt) {
+        NSString *abs = [self _absoluteURL:raw base:base];
+        if (!abs) return;
+        NSString *lower = abs.lowercaseString;
+        if ([seen containsObject:lower]) return;
+        // Strip query for extension checks
+        NSString *pathOnly = lower;
+        NSRange q = [lower rangeOfString:@"?"];
+        if (q.location != NSNotFound) pathOnly = [lower substringToIndex:q.location];
+        // Reject known non-video extensions
+        for (NSString *sk in skipExts) {
+            if ([pathOnly hasSuffix:sk]) return;
+        }
+        if (requireVideoExt && ![self _isVideoURL:abs]) return;
+        // Must at least be http(s)
+        if (![abs hasPrefix:@"http"]) return;
+        [seen addObject:lower];
+        [found addObject:abs];
+    };
+
+    // ── 1. HTML attr with explicit video extension (strict) ─────────────────
+    NSString *attrExtPat = [NSString stringWithFormat:
+        @"(?:src|href|file|url|stream|source|path|data-src|data-url|data-file)"
+        @"\\s*[=:]\\s*[\"']([^\"'\\s]{5,600}\\.(?:%@)[^\"'\\s]{0,60})[\"']",
         [VideoExtensions() componentsJoinedByString:@"|"]];
 
-    // Also catch URLs without quotes in JSON-ish contexts
-    NSString *jsonPattern =
-        @"\"(?:src|url|file|stream|source|hls|dash|manifest|video)\"\\s*:\\s*\"([^\"\\s]{8,500})\"";
+    // ── 2. Bare .m3u8 / .mpd / .ts in any quoted string (strict) ───────────
+    NSString *bareHLSPat =
+        @"[\"']([^\"'\\s]{8,600}\\.(?:m3u8|mpd|ts)(?:[?#][^\"'\\s]{0,100})?)[\"']";
 
-    NSString *srcPattern =
-        @"<source[^>]+src=[\"']([^\"']{8,500})[\"']";
+    // ── 3. JSON key → video concept, absolute http URL (trusted) ────────────
+    NSString *jsonKeyPat =
+        @"\"(?:src|url|file|stream|source|hls|dash|manifest|video|videoUrl|fileUrl|"
+        @"streamUrl|hlsUrl|mp4|mp4Url|mediaUrl|contentUrl|playbackUrl|videoSrc)\""
+        @"\\s*:\\s*\"(https?://[^\"\\s]{8,600})\"";
 
-    NSString *embedPattern =
-        @"[\"']([^\"'\\s]{8,500}\\.(?:m3u8|mpd|ts)(?:[?#][^\"'\\s]*)?)";
+    // ── 4. <source src="..."> tag (trusted — element guarantees video) ───────
+    NSString *sourceTagPat =
+        @"<source[^>]+src=[\"'](https?://[^\"'\\s]{8,500})[\"']";
 
-    NSArray<NSString *> *patterns = @[extPattern, jsonPattern, srcPattern, embedPattern];
+    // ── 5. JS variable / object key assignments (trusted) ───────────────────
+    //    Catches: file: "https://...",  src: "https://...",  hls: "https://..."
+    //    and var src = "https://..."   (JWPlayer, VideoJS, hls.js, etc.)
+    NSString *jsVarPat =
+        @"(?:^|[{,;\\s])(?:file|src|source|hls|stream|url|video|mp4)"
+        @"\\s*[=:]\\s*[\"'](https?://[^\"'\\s]{8,500})[\"']";
+
+    // strict = URL must pass _isVideoURL; NO = trusted (any http URL)
+    NSDictionary<NSString *, NSNumber *> *patterns = @{
+        attrExtPat:  @YES,
+        bareHLSPat:  @YES,
+        jsonKeyPat:  @NO,
+        sourceTagPat:@NO,
+        jsVarPat:    @NO,
+    };
 
     for (NSString *pat in patterns) {
+        BOOL strict = [patterns[pat] boolValue];
         NSError *err = nil;
         NSRegularExpression *rx = [NSRegularExpression
             regularExpressionWithPattern:pat
                                  options:NSRegularExpressionCaseInsensitive
+                                         |NSRegularExpressionAnchorsMatchLines
                                    error:&err];
         if (!rx) continue;
         [rx enumerateMatchesInString:body options:0 range:NSMakeRange(0, body.length)
@@ -339,13 +381,7 @@ static NSArray<NSString *> *VideoKeywords(void) {
             if (match.numberOfRanges < 2) return;
             NSRange r = [match rangeAtIndex:1];
             if (r.location == NSNotFound) return;
-            NSString *raw = [body substringWithRange:r];
-            NSString *abs = [self _absoluteURL:raw base:base];
-            if (!abs || [seen containsObject:abs.lowercaseString]) return;
-            if ([self _isVideoURL:abs]) {
-                [seen addObject:abs.lowercaseString];
-                [found addObject:abs];
-            }
+            tryAdd([body substringWithRange:r], strict);
         }];
     }
     return found;
@@ -395,13 +431,11 @@ static NSArray<NSString *> *VideoKeywords(void) {
     NSRange q = [lower rangeOfString:@"?"];
     if (q.location != NSNotFound) path = [lower substringToIndex:q.location];
     NSString *ext = [path pathExtension];
+    // Known video extension — always a hit
     if ([VideoExtensions() containsObject:ext]) return YES;
-    for (NSString *kw in VideoKeywords()) {
-        if ([lower rangeOfString:kw].location != NSNotFound) {
-            if ([lower rangeOfString:@".m3u"].location != NSNotFound) return YES;
-            if ([lower rangeOfString:@".mpd"].location != NSNotFound) return YES;
-        }
-    }
+    // Explicit HLS/DASH markers anywhere in URL (even in query params)
+    if ([lower containsString:@".m3u8"] || [lower containsString:@".mpd"] ||
+        [lower containsString:@"hls/"] || [lower containsString:@"/manifest"]) return YES;
     return NO;
 }
 

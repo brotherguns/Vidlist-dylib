@@ -216,22 +216,36 @@ trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
                                         target:self
                                         action:@selector(_dismiss)];
 
-    // Progress header
-    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 60)];
+    // Progress header — use Auto Layout so it works inside sheet presentations
+    // where self.view.bounds.size.width is 0 at viewDidLoad time
+    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, UIScreen.mainScreen.bounds.size.width, 56)];
     header.backgroundColor = [UIColor clearColor];
+    header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
 
-    _progressView = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
-    _progressView.frame = CGRectMake(16, 28, self.view.bounds.size.width - 32, 4);
-    _progressView.alpha = 0;
-    _progressView.tintColor = [UIColor systemBlueColor];
-
-    _progressLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 8, self.view.bounds.size.width - 32, 18)];
+    _progressLabel = [[UILabel alloc] init];
+    _progressLabel.translatesAutoresizingMaskIntoConstraints = NO;
     _progressLabel.font      = [UIFont systemFontOfSize:12];
     _progressLabel.textColor = [UIColor secondaryLabelColor];
     _progressLabel.alpha     = 0;
 
-    [header addSubview:_progressView];
+    _progressView = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
+    _progressView.translatesAutoresizingMaskIntoConstraints = NO;
+    _progressView.alpha     = 0;
+    _progressView.tintColor = [UIColor systemBlueColor];
+
     [header addSubview:_progressLabel];
+    [header addSubview:_progressView];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [_progressLabel.topAnchor    constraintEqualToAnchor:header.topAnchor    constant:8],
+        [_progressLabel.leadingAnchor  constraintEqualToAnchor:header.leadingAnchor  constant:16],
+        [_progressLabel.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-16],
+        [_progressView.topAnchor     constraintEqualToAnchor:_progressLabel.bottomAnchor constant:6],
+        [_progressView.leadingAnchor   constraintEqualToAnchor:header.leadingAnchor  constant:16],
+        [_progressView.trailingAnchor  constraintEqualToAnchor:header.trailingAnchor constant:-16],
+        [_progressView.bottomAnchor  constraintEqualToAnchor:header.bottomAnchor constant:-8],
+    ]];
+
     self.tableView.tableHeaderView = header;
 
     [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:@"jobCell"];
