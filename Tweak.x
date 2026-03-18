@@ -249,6 +249,73 @@ static void VLCSetupOverlay(void) {
 // Premium JSON patcher
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Static response forger
+// Built from real captured responses (auth/me + adverts dumps)
+// Keyed on URL path — returns forged data for known endpoints,
+// falls back to deep-patch walker for anything else
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Forged auth/me — isPremium true, isTrial false, real user fields preserved.
+// subscriptionID bumped from VH-000 (free) to VH-PRO to satisfy any type checks.
+static NSData *VLCForgedAuthMe(NSData *original) {
+    // Parse original to carry over live fields (id, username, email, region etc.)
+    NSError *e = nil;
+    NSMutableDictionary *d = [NSJSONSerialization JSONObjectWithData:original
+                                                            options:NSJSONReadingMutableContainers
+                                                              error:&e];
+    if (e || ![d isKindOfClass:[NSMutableDictionary class]]) {
+        // Fallback: full static forge with known values
+        d = [@{
+            @"region":         @"us",
+            @"isTrial":        @NO,
+            @"favoritesCount": @"0",
+            @"id":             @"C645789E-B0E6-43E2-98B0-B0F82DA662E2",
+            @"isPremium":      @YES,
+            @"seenCount":      @"0",
+            @"nsfwOn":         @YES,
+            @"username":       @"brotherguns53587337",
+            @"email":          @"brotherhehe23@gmail.com",
+            @"appType":        @"vl",
+            @"subscriptionID": @"VH-PRO"
+        } mutableCopy];
+    } else {
+        d[@"isPremium"]      = @YES;
+        d[@"isTrial"]        = @NO;
+        d[@"nsfwOn"]         = @YES;
+        d[@"subscriptionID"] = @"VH-PRO";
+        if (d[@"premiumExpire"] != nil) d[@"premiumExpire"] = @"2099-12-31T00:00:00.000Z";
+    }
+    NSData *out = [NSJSONSerialization dataWithJSONObject:d options:0 error:&e];
+    return out ?: original;
+}
+
+// Forged adverts — empty array kills all disclaimer banners
+static NSData *VLCForgedAdverts(void) {
+    static NSData *empty;
+    static dispatch_once_t t;
+    dispatch_once(&t, ^{ empty = [@"[]" dataUsingEncoding:NSUTF8StringEncoding]; });
+    return empty;
+}
+
+// Forged premium subscriptions — active lifetime sub
+static NSData *VLCForgedSubscriptions(void) {
+    NSArray *subs = @[@{
+        @"id":             @"VLC-SUB-0001",
+        @"type":           @"lifetime",
+        @"isActive":       @YES,
+        @"expireAt":       @"2099-12-31T00:00:00.000Z",
+        @"createAt":       @"2020-01-01T00:00:00.000Z",
+        @"info":           @"Premium",
+        @"code":           @"VLC-LIFETIME",
+        @"activateCount":  @1,
+        @"appType":        @"vl"
+    }];
+    NSError *e = nil;
+    return [NSJSONSerialization dataWithJSONObject:subs options:0 error:&e] ?: nil;
+}
+
+// Deep-patch walker for any other endpoint
 static void VLCPatchDictRecursive(id obj) {
     if ([obj isKindOfClass:[NSMutableDictionary class]]) {
         NSMutableDictionary *d = (NSMutableDictionary *)obj;
@@ -257,8 +324,7 @@ static void VLCPatchDictRecursive(id obj) {
         if (d[@"premiumExpire"] != nil) d[@"premiumExpire"] = @"2099-12-31T00:00:00.000Z";
         if (d[@"isActive"]      != nil) d[@"isActive"]      = @YES;
         if (d[@"expireAt"]      != nil) d[@"expireAt"]      = @"2099-12-31T00:00:00.000Z";
-        if (d[@"expiredAt"]     != nil) d[@"expiredAt"]      = @"2099-12-31T00:00:00.000Z";
-        // Some APIs wrap data under "data" or "result" or "success" keys
+        if (d[@"expiredAt"]     != nil) d[@"expiredAt"]     = @"2099-12-31T00:00:00.000Z";
         for (id key in [d allKeys]) VLCPatchDictRecursive(d[key]);
     } else if ([obj isKindOfClass:[NSMutableArray class]]) {
         for (id item in (NSMutableArray *)obj) VLCPatchDictRecursive(item);
@@ -267,10 +333,8 @@ static void VLCPatchDictRecursive(id obj) {
 
 static NSData *VLCPatchJSON(NSData *data) {
     if (!data || data.length < 4) return data;
-    // Only process JSON (starts with { or [)
     uint8_t first = ((uint8_t *)data.bytes)[0];
     if (first != '{' && first != '[') return data;
-
     NSError *err = nil;
     id json = [NSJSONSerialization JSONObjectWithData:data
                                              options:NSJSONReadingMutableContainers
@@ -279,6 +343,16 @@ static NSData *VLCPatchJSON(NSData *data) {
     VLCPatchDictRecursive(json);
     NSData *out = [NSJSONSerialization dataWithJSONObject:json options:0 error:&err];
     return (err || !out) ? data : out;
+}
+
+// Route: pick forger by URL path, fall back to generic patcher
+static NSData *VLCForgeResponse(NSData *data, NSString *path) {
+    if ([path hasSuffix:@"/auth/me"]           ||
+        [path hasSuffix:@"/auth/refreshToken"] ||
+        [path hasSuffix:@"/auth/guestLogin"])  return VLCForgedAuthMe(data);
+    if ([path containsString:@"/adverts"])     return VLCForgedAdverts();
+    if ([path containsString:@"/premium/subscriptions"]) return VLCForgedSubscriptions();
+    return VLCPatchJSON(data);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -369,10 +443,11 @@ static void VLCSaveDump(NSData *raw, NSString *urlPath) {
                cacheStoragePolicy:NSURLCacheStorageNotAllowed];
 
         // Dump raw before patching
-        VLCSaveDump(data, s.request.URL.path ?: @"unknown");
+        NSString *urlPath = s.request.URL.path ?: @"unknown";
+        VLCSaveDump(data, urlPath);
 
-        // Patch and forward
-        NSData *patched = VLCPatchJSON(data);
+        // Forge/patch and forward
+        NSData *patched = VLCForgeResponse(data, urlPath);
         if (patched.length) [s.client URLProtocol:s didLoadData:patched];
         [s.client URLProtocolDidFinishLoading:s];
     }];
@@ -393,11 +468,11 @@ static void VLCSaveDump(NSData *raw, NSString *urlPath) {
     if (![host containsString:@"vidlist.pw"]) {
         return %orig(request, completion);
     }
+    NSString *reqPath = request.URL.path ?: @"";
     void (^handler)(NSData *, NSURLResponse *, NSError *) =
         ^(NSData *d, NSURLResponse *r, NSError *e) {
-            NSData *patched = VLCPatchJSON(d);
-            VLCSaveDump(d, request.URL.path ?: @"");
-            if (completion) completion(patched, r, e);
+            VLCSaveDump(d, reqPath);
+            if (completion) completion(VLCForgeResponse(d, reqPath), r, e);
         };
     return %orig(request, handler);
 }
@@ -408,11 +483,11 @@ static void VLCSaveDump(NSData *raw, NSString *urlPath) {
     if (![host containsString:@"vidlist.pw"]) {
         return %orig(url, completion);
     }
+    NSString *urlPath2 = url.path ?: @"";
     void (^handler)(NSData *, NSURLResponse *, NSError *) =
         ^(NSData *d, NSURLResponse *r, NSError *e) {
-            NSData *patched = VLCPatchJSON(d);
-            VLCSaveDump(d, url.path ?: @"");
-            if (completion) completion(patched, r, e);
+            VLCSaveDump(d, urlPath2);
+            if (completion) completion(VLCForgeResponse(d, urlPath2), r, e);
         };
     return %orig(url, handler);
 }
