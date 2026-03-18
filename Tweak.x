@@ -188,9 +188,11 @@ static NSData *VLCPatchPremiumJSON(NSData *data) {
     if (![host containsString:@"vidlist.pw"]) {
         return %orig(request, completion);
     }
-    return %orig(request, ^(NSData *data, NSURLResponse *response, NSError *error) {
-        if (completion) completion(VLCPatchPremiumJSON(data), response, error);
-    });
+    void (^patchedHandler)(NSData *, NSURLResponse *, NSError *) =
+        ^(NSData *data, NSURLResponse *response, NSError *error) {
+            if (completion) completion(VLCPatchPremiumJSON(data), response, error);
+        };
+    return %orig(request, patchedHandler);
 }
 
 %end
