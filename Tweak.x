@@ -325,6 +325,18 @@ static void VLCPatchDictRecursive(id obj) {
         if (d[@"isActive"]      != nil) d[@"isActive"]      = @YES;
         if (d[@"expireAt"]      != nil) d[@"expireAt"]      = @"2099-12-31T00:00:00.000Z";
         if (d[@"expiredAt"]     != nil) d[@"expiredAt"]     = @"2099-12-31T00:00:00.000Z";
+
+        // Category/model subscription gate:
+        // {"subscription": {"id": "VH-000"}} means free-tier only
+        // Patch the nested id to match our forged subscriptionID
+        if (d[@"subscription"] != nil &&
+            [d[@"subscription"] isKindOfClass:[NSMutableDictionary class]]) {
+            NSMutableDictionary *sub = (NSMutableDictionary *)d[@"subscription"];
+            if (sub[@"id"] != nil) sub[@"id"] = @"VH-PRO";
+        }
+        // Also handle flat subscriptionID field
+        if (d[@"subscriptionID"] != nil) d[@"subscriptionID"] = @"VH-PRO";
+
         for (id key in [d allKeys]) VLCPatchDictRecursive(d[key]);
     } else if ([obj isKindOfClass:[NSMutableArray class]]) {
         for (id item in (NSMutableArray *)obj) VLCPatchDictRecursive(item);
@@ -347,11 +359,25 @@ static NSData *VLCPatchJSON(NSData *data) {
 
 // Route: pick forger by URL path, fall back to generic patcher
 static NSData *VLCForgeResponse(NSData *data, NSString *path) {
+    // Auth endpoints — full static forge with premium fields
     if ([path hasSuffix:@"/auth/me"]           ||
         [path hasSuffix:@"/auth/refreshToken"] ||
         [path hasSuffix:@"/auth/guestLogin"])  return VLCForgedAuthMe(data);
-    if ([path containsString:@"/adverts"])     return VLCForgedAdverts();
-    if ([path containsString:@"/premium/subscriptions"]) return VLCForgedSubscriptions();
+
+    // Kill adverts entirely — return empty array
+    if ([path containsString:@"advert"] ||
+        [path containsString:@"Advert"]) return VLCForgedAdverts();
+
+    // Premium subscriptions — inject active lifetime sub
+    if ([path containsString:@"premium/subscription"]) return VLCForgedSubscriptions();
+
+    // Feed + search feed — patch subscription gates on every category/model/video
+    // (all 202 feed items arrive isPremium=true; categories have subscription.id=VH-000)
+    if ([path containsString:@"/feed"]   ||
+        [path containsString:@"/source"] ||
+        [path containsString:@"/search"]) return VLCPatchJSON(data);
+
+    // Everything else — generic deep-patch
     return VLCPatchJSON(data);
 }
 
