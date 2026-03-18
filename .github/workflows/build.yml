@@ -1,0 +1,58 @@
+name: Build VLCrawler Dylib
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Theos
+        run: |
+          brew install ldid xz
+          git clone --recursive https://github.com/theos/theos.git $THEOS
+          # Download iOS SDK
+          curl -Lo /tmp/sdk.tar.xz https://github.com/theos/sdks/releases/download/fallback/iPhoneOS16.5.sdk.tar.xz
+          tar -xJf /tmp/sdk.tar.xz -C $THEOS/sdks/
+        env:
+          THEOS: ${{ github.workspace }}/theos
+
+      - name: Build
+        run: |
+          cd VLCrawlerTweak
+          make clean
+          make package FINALPACKAGE=1
+        env:
+          THEOS: ${{ github.workspace }}/theos
+          THEOS_DEVICE_IP: ""
+
+      - name: Extract dylib from deb
+        run: |
+          DEB=$(ls VLCrawlerTweak/packages/*.deb | head -1)
+          mkdir -p artifacts
+          dpkg-deb -x "$DEB" artifacts/extracted/
+          cp artifacts/extracted/Library/MobileSubstrate/DynamicLibraries/VLCrawler.dylib artifacts/
+          cp "$DEB" artifacts/
+          echo "DEB=$DEB" >> $GITHUB_ENV
+
+      - name: Upload dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: VLCrawler-dylib
+          path: artifacts/VLCrawler.dylib
+          retention-days: 30
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: VLCrawler-deb
+          path: artifacts/*.deb
+          retention-days: 30
