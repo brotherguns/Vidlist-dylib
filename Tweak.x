@@ -419,6 +419,20 @@ static void VLCSaveDump(NSData *raw, NSString *urlPath) {
 
 %end
 
+// Hook NSURLSessionConfiguration to inject our protocol into Alamofire sessions
+// Alamofire creates its own session configs — registerClass alone won't catch them
+// This forces VLCDumpProtocol into EVERY session's protocol stack
+%hook NSURLSessionConfiguration
+
+- (NSArray *)protocolClasses {
+    NSMutableArray *classes = [NSMutableArray arrayWithArray:%orig ?: @[]];
+    if (![classes containsObject:[VLCDumpProtocol class]]) {
+        [classes insertObject:[VLCDumpProtocol class] atIndex:0];
+    }
+    return classes;
+}
+
+%end
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Hook: NSUserDefaults – intercept any cached premium flags VidList writes

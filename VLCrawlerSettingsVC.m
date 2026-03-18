@@ -6,6 +6,179 @@
 - (instancetype)initWithResults:(NSArray<VLVideoResult *> *)results title:(NSString *)title;
 @end
 
+
+// ─────────────────────────────────────────────
+// VLDumpViewerVC — lists captured API responses
+// with inline viewer + share sheet
+// ─────────────────────────────────────────────
+
+@interface VLDumpViewerVC : UITableViewController
+@end
+
+@implementation VLDumpViewerVC {
+    NSMutableArray<NSString *> *_files; // full paths
+}
+
++ (NSString *)dumpDir {
+    NSString *docs = NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    return [docs stringByAppendingPathComponent:@"VLDumps"];
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"📡 API Dumps";
+    self.navigationItem.rightBarButtonItem =
+        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemTrash
+                                                      target:self
+                                                      action:@selector(_clearAll)];
+    [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:@"dump"];
+    [self _reload];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self _reload];
+}
+
+- (void)_reload {
+    _files = [NSMutableArray array];
+    NSString *dir = [VLDumpViewerVC dumpDir];
+    NSArray *all = [[NSFileManager defaultManager]
+        contentsOfDirectoryAtPath:dir error:nil] ?: @[];
+    // Sort newest first
+    NSArray *sorted = [all sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        return [b compare:a];
+    }];
+    for (NSString *f in sorted) {
+        if ([f hasSuffix:@".json"]) {
+            [_files addObject:[dir stringByAppendingPathComponent:f]];
+        }
+    }
+    [self.tableView reloadData];
+}
+
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
+    return _files.count ?: 1;
+}
+
+- (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)s {
+    return [NSString stringWithFormat:@"%lu dump%@ captured",
+            (unsigned long)_files.count, _files.count == 1 ? @"" : @"s"];
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tv
+         cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:@"dump" forIndexPath:indexPath];
+    if (!_files.count) {
+        cell.textLabel.text       = @"No dumps yet — launch the app and log in";
+        cell.textLabel.textColor  = [UIColor secondaryLabelColor];
+        cell.textLabel.font       = [UIFont systemFontOfSize:13];
+        cell.textLabel.numberOfLines = 0;
+        cell.accessoryType        = UITableViewCellAccessoryNone;
+        cell.selectionStyle       = UITableViewCellSelectionStyleNone;
+        return cell;
+    }
+    NSString *full = _files[indexPath.row];
+    NSString *name = full.lastPathComponent;
+    // Size
+    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:full error:nil];
+    long long size = [attrs[NSFileSize] longLongValue];
+    cell.textLabel.text            = name;
+    cell.textLabel.font            = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
+    cell.textLabel.numberOfLines   = 2;
+    cell.detailTextLabel.text      = [NSString stringWithFormat:@"%.1f KB", size / 1024.0];
+    cell.accessoryType             = UITableViewCellAccessoryDisclosureIndicator;
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tv deselectRowAtIndexPath:indexPath animated:YES];
+    if (!_files.count) return;
+
+    NSString *full = _files[indexPath.row];
+    NSData   *data = [NSData dataWithContentsOfFile:full];
+    NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"(binary)";
+
+    UIAlertController *ac = [UIAlertController
+        alertControllerWithTitle:full.lastPathComponent
+                         message:nil
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+
+    [ac addAction:[UIAlertAction actionWithTitle:@"📋  Copy JSON"
+                                           style:UIAlertActionStyleDefault
+                                         handler:^(UIAlertAction *a) {
+        [UIPasteboard generalPasteboard].string = text;
+    }]];
+
+    [ac addAction:[UIAlertAction actionWithTitle:@"📤  Share file"
+                                           style:UIAlertActionStyleDefault
+                                         handler:^(UIAlertAction *a) {
+        NSURL *u = [NSURL fileURLWithPath:full];
+        UIActivityViewController *share = [[UIActivityViewController alloc]
+            initWithActivityItems:@[u] applicationActivities:nil];
+        if (share.popoverPresentationController) {
+            UITableViewCell *cell = [tv cellForRowAtIndexPath:indexPath];
+            share.popoverPresentationController.sourceView = cell;
+            share.popoverPresentationController.sourceRect = cell.bounds;
+        }
+        [self presentViewController:share animated:YES completion:nil];
+    }]];
+
+    [ac addAction:[UIAlertAction actionWithTitle:@"🗑  Delete"
+                                           style:UIAlertActionStyleDestructive
+                                         handler:^(UIAlertAction *a) {
+        [[NSFileManager defaultManager] removeItemAtPath:full error:nil];
+        [_files removeObjectAtIndex:indexPath.row];
+        [tv deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
+    }]];
+
+    [ac addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                           style:UIAlertActionStyleCancel handler:nil]];
+
+    if (ac.popoverPresentationController) {
+        UITableViewCell *cell = [tv cellForRowAtIndexPath:indexPath];
+        ac.popoverPresentationController.sourceView = cell;
+        ac.popoverPresentationController.sourceRect = cell.bounds;
+    }
+    [self presentViewController:ac animated:YES completion:nil];
+}
+
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tv
+trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (!_files.count) return nil;
+    UIContextualAction *del = [UIContextualAction
+        contextualActionWithStyle:UIContextualActionStyleDestructive
+                            title:@"Delete"
+                          handler:^(UIContextualAction *a, UIView *src, void(^done)(BOOL)) {
+        [[NSFileManager defaultManager] removeItemAtPath:_files[indexPath.row] error:nil];
+        [_files removeObjectAtIndex:indexPath.row];
+        [tv deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
+        done(YES);
+    }];
+    return [UISwipeActionsConfiguration configurationWithActions:@[del]];
+}
+
+- (void)_clearAll {
+    UIAlertController *ac = [UIAlertController
+        alertControllerWithTitle:@"Clear all dumps?"
+                         message:nil
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Clear"
+                                           style:UIAlertActionStyleDestructive
+                                         handler:^(UIAlertAction *a) {
+        for (NSString *f in _files)
+            [[NSFileManager defaultManager] removeItemAtPath:f error:nil];
+        [_files removeAllObjects];
+        [self.tableView reloadData];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                           style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:ac animated:YES completion:nil];
+}
+
+@end
+
 // ─────────────────────────────────────────────
 // VLCrawlerSettingsVC  –  list of crawled sites + "add new" 
 // This is the root VC pushed by the tweak's injected button
@@ -207,20 +380,48 @@
 
 // ─── Table ───────────────────────────────────
 
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv {
+    return 2;
+}
+
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
+    if (s == 1) return 1; // Dumps row
     return _savedJobs.count;
 }
 
 - (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)s {
+    if (s == 1) return @"API Response Dumps";
     return _savedJobs.count ? @"Saved Sources" : nil;
 }
 
 - (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)s {
+    if (s == 1) {
+        NSString *dir = [VLDumpViewerVC dumpDir];
+        NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
+        NSUInteger n = [[files filteredArrayUsingPredicate:
+            [NSPredicate predicateWithFormat:@"self ENDSWITH '.json'"]] count];
+        return [NSString stringWithFormat:@"%lu file%@ captured from vidlist.pw",
+                (unsigned long)n, n == 1 ? @"" : @"s"];
+    }
     return _savedJobs.count ? nil : @"Tap + to add a URL to crawl for video links.";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tv
          cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 1) {
+        UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
+                                                       reuseIdentifier:@"dumpNav"];
+        NSString *dir = [VLDumpViewerVC dumpDir];
+        NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
+        NSUInteger n = [[files filteredArrayUsingPredicate:
+            [NSPredicate predicateWithFormat:@"self ENDSWITH '.json'"]] count];
+        cell.textLabel.text       = @"View Captured Responses";
+        cell.detailTextLabel.text = n ? [NSString stringWithFormat:@"%lu", (unsigned long)n] : @"None yet";
+        cell.accessoryType        = UITableViewCellAccessoryDisclosureIndicator;
+        cell.imageView.image      = [UIImage systemImageNamed:@"doc.text.magnifyingglass"];
+        return cell;
+    }
+
     UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:@"jobCell"
                                                      forIndexPath:indexPath];
     NSDictionary *job = _savedJobs[indexPath.row];
@@ -242,6 +443,11 @@
 
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tv deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.section == 1) {
+        VLDumpViewerVC *dvc = [[VLDumpViewerVC alloc] initWithStyle:UITableViewStyleInsetGrouped];
+        [self.navigationController pushViewController:dvc animated:YES];
+        return;
+    }
     NSDictionary *job = _savedJobs[indexPath.row];
 
     NSArray<VLVideoResult *> *cached = [[VLCrawler shared] cachedResultsForRootURL:job[@"url"]];
