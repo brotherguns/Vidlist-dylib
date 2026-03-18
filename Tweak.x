@@ -36,7 +36,6 @@ static UIButton *VLCGetOrCreateButton(void) {
             }
         }
     }
-    if (!win) win = [UIApplication sharedApplication].keyWindow;
     if (!win) return nil;
 
     // Find existing
