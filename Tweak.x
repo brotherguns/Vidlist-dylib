@@ -419,7 +419,6 @@ static void VLCSaveDump(NSData *raw, NSString *urlPath) {
 
 %end
 
-%end
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Hook: NSUserDefaults – intercept any cached premium flags VidList writes
