@@ -257,7 +257,7 @@ static void VLCSetupOverlay(void) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Forged auth/me — isPremium true, isTrial false, real user fields preserved.
-// subscriptionID bumped from VH-000 (free) to VH-PRO to satisfy any type checks.
+// VH-001 = premium tier (VH-000 = free)
 static NSData *VLCForgedAuthMe(NSData *original) {
     // Parse original to carry over live fields (id, username, email, region etc.)
     NSError *e = nil;
@@ -277,13 +277,13 @@ static NSData *VLCForgedAuthMe(NSData *original) {
             @"username":       @"brotherguns53587337",
             @"email":          @"brotherhehe23@gmail.com",
             @"appType":        @"vl",
-            @"subscriptionID": @"VH-PRO"
+            @"subscriptionID": @"VH-001"
         } mutableCopy];
     } else {
         d[@"isPremium"]      = @YES;
         d[@"isTrial"]        = @NO;
         d[@"nsfwOn"]         = @YES;
-        d[@"subscriptionID"] = @"VH-PRO";
+        d[@"subscriptionID"] = @"VH-001";
         if (d[@"premiumExpire"] != nil) d[@"premiumExpire"] = @"2099-12-31T00:00:00.000Z";
     }
     NSData *out = [NSJSONSerialization dataWithJSONObject:d options:0 error:&e];
@@ -326,20 +326,51 @@ static void VLCPatchDictRecursive(id obj) {
         if (d[@"expireAt"]      != nil) d[@"expireAt"]      = @"2099-12-31T00:00:00.000Z";
         if (d[@"expiredAt"]     != nil) d[@"expiredAt"]     = @"2099-12-31T00:00:00.000Z";
 
-        // Category/model subscription gate:
-        // {"subscription": {"id": "VH-000"}} means free-tier only
-        // Patch the nested id to match our forged subscriptionID
+        // VH-000 = free tier, VH-001 = premium tier
         if (d[@"subscription"] != nil &&
             [d[@"subscription"] isKindOfClass:[NSMutableDictionary class]]) {
             NSMutableDictionary *sub = (NSMutableDictionary *)d[@"subscription"];
-            if (sub[@"id"] != nil) sub[@"id"] = @"VH-PRO";
+            if (sub[@"id"] != nil) sub[@"id"] = @"VH-001";
         }
-        // Also handle flat subscriptionID field
-        if (d[@"subscriptionID"] != nil) d[@"subscriptionID"] = @"VH-PRO";
+        if (d[@"subscriptionID"] != nil) d[@"subscriptionID"] = @"VH-001";
+
+        // vdl://premium is the server's paywall URL for HQ links
+        // mark it for replacement at array level
+        if ([d[@"url"] isKindOfClass:[NSString class]] &&
+            [d[@"url"] hasPrefix:@"vdl://"]) {
+            d[@"isPremium"] = @NO;
+        }
 
         for (id key in [d allKeys]) VLCPatchDictRecursive(d[key]);
     } else if ([obj isKindOfClass:[NSMutableArray class]]) {
-        for (id item in (NSMutableArray *)obj) VLCPatchDictRecursive(item);
+        NSMutableArray *arr = (NSMutableArray *)obj;
+        for (id item in arr) VLCPatchDictRecursive(item);
+
+        // Fix vdl://premium in downloadLinks/qualityUrls arrays
+        // Find best real URL (HLS preferred, then any http)
+        BOOL hasVdl = NO;
+        NSString *fallback = nil;
+        for (id item in arr) {
+            if (![item isKindOfClass:[NSMutableDictionary class]]) continue;
+            NSString *u = ((NSMutableDictionary *)item)[@"url"] ?: @"";
+            if ([u hasPrefix:@"vdl://"]) { hasVdl = YES; continue; }
+            if ([u hasPrefix:@"http"]) {
+                if (!fallback) fallback = u;
+                if ([u containsString:@"hls"] || [u containsString:@"m3u8"]) {
+                    fallback = u; // prefer HLS
+                }
+            }
+        }
+        if (hasVdl && fallback) {
+            for (id item in arr) {
+                if (![item isKindOfClass:[NSMutableDictionary class]]) continue;
+                NSMutableDictionary *d = (NSMutableDictionary *)item;
+                if ([d[@"url"] hasPrefix:@"vdl://"]) {
+                    d[@"url"]       = fallback;
+                    d[@"isPremium"] = @NO;
+                }
+            }
+        }
     }
 }
 
